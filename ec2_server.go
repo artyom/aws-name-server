@@ -1,11 +1,12 @@
 package main
 
 import (
-	"github.com/miekg/dns"
 	"log"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/miekg/dns"
 )
 
 type EC2Server struct {
@@ -159,7 +160,7 @@ func (s *EC2Server) SOA(msg dns.Question) dns.RR {
 		Hdr:     dns.RR_Header{Name: s.domain, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 60},
 		Ns:      s.hostname,
 		Mbox:    "me.cirw.in.",
-		Serial:  uint32(time.Now().Unix()),
+		Serial:  s.cache.serial(),
 		Refresh: 86400,
 		Retry:   7200,
 		Expire:  86400,

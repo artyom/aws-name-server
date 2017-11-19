@@ -2,14 +2,18 @@ package main
 
 import (
 	"fmt"
-	"github.com/mitchellh/goamz/aws"
-	"github.com/mitchellh/goamz/ec2"
+	"hash/fnv"
 	"log"
 	"net"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/mitchellh/goamz/aws"
+	"github.com/mitchellh/goamz/ec2"
 )
 
 // The length of time to cache the results of ec2-describe-instances.
@@ -47,6 +51,7 @@ type EC2Cache struct {
 	region    aws.Region
 	accessKey string
 	secretKey string
+	hash      uint32 // content-dependent hash, updated/read with atomic ops
 	records   map[Key][]*Record
 	mutex     sync.RWMutex
 }
@@ -84,11 +89,33 @@ func NewEC2Cache(regionName, accessKey, secretKey string) (*EC2Cache, error) {
 	return cache, nil
 }
 
+// serial returns serial number for the cache calculated from its content
+func (cache *EC2Cache) serial() uint32 { return atomic.LoadUint32(&cache.hash) }
+
 // setRecords updates the cache with a new set of Records
 func (cache *EC2Cache) setRecords(records map[Key][]*Record) {
+	h := fnv.New32a()
+	keys := make([]Key, 0, len(records))
+	for k := range records {
+		keys = append(keys, k)
+	}
+	sort.SliceStable(keys, func(i, j int) bool {
+		ki, kj := keys[i], keys[j]
+		if ki.LookupTag == kj.LookupTag {
+			return ki.string < kj.string
+		}
+		return ki.LookupTag < kj.LookupTag
+	})
+	for _, k := range keys {
+		fmt.Fprintf(h, "%#v\n", k)
+		for _, r := range records[k] {
+			fmt.Fprintf(h, "%#v\n", r)
+		}
+	}
 	cache.mutex.Lock()
 	defer cache.mutex.Unlock()
 	cache.records = records
+	atomic.StoreUint32(&cache.hash, h.Sum32())
 }
 
 func (cache *EC2Cache) Instances() (*ec2.InstancesResp, error) {
@@ -114,7 +141,7 @@ func sanitize(tag string) string {
 
 func (cache *EC2Cache) refresh() error {
 	result, err := cache.Instances()
-	validUntil := time.Now().Add(TTL)
+	validUntil := time.Now().Truncate(time.Minute).Add(TTL)
 
 	if err != nil {
 		return err
